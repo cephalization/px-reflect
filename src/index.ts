@@ -51,6 +51,19 @@ type ReflectRequest = {
 };
 
 const jsonHeaders = { "content-type": "application/json" };
+const isProduction = process.env.NODE_ENV === "production";
+
+function resolvePort() {
+  const envPort = process.env.PORT;
+
+  if (envPort) {
+    const parsed = Number(envPort);
+    if (Number.isInteger(parsed) && parsed >= 0) return parsed;
+    throw new Error(`Invalid PORT: ${envPort}`);
+  }
+
+  return isProduction ? 3000 : 0;
+}
 
 function phoenixHeaders(apiKey?: string) {
   return {
@@ -105,6 +118,7 @@ function publicSpan(span: Span): Span {
 }
 
 const server = serve({
+  port: resolvePort(),
   routes: {
     // Serve index.html for all unmatched routes.
     "/*": index,
@@ -171,7 +185,7 @@ const server = serve({
     },
   },
 
-  development: process.env.NODE_ENV !== "production" && {
+  development: !isProduction && {
     // Enable browser hot reloading in development
     hmr: true,
 
