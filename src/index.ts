@@ -68,7 +68,12 @@ function resolvePort() {
 function phoenixHeaders(apiKey?: string) {
   return {
     accept: "application/json",
-    ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
+    ...(apiKey
+      ? {
+          authorization: `Bearer ${apiKey}`,
+          "api_key": apiKey, // Some Phoenix deployments use this header
+        }
+      : {}),
   };
 }
 
@@ -95,9 +100,25 @@ async function readJson<T>(req: Request) {
 
 async function phoenixFetch(baseUrl: string, path: string, options: RequestInit & { query?: Record<string, string | string[] | number | undefined> }) {
   const url = phoenixUrl(baseUrl, path, options.query);
+  
+  // Debug: log outgoing request details (redact full API key)
+  const authHeader = (options.headers as Record<string, string>)?.authorization;
+  const hasAuth = Boolean(authHeader);
+  const authPreview = authHeader ? `${authHeader.slice(0, 15)}...${authHeader.slice(-4)}` : "none";
+  console.log(`[phoenixFetch] ${options.method} ${url}`);
+  console.log(`[phoenixFetch] Auth header present: ${hasAuth}, preview: ${authPreview}`);
+  
   const response = await fetch(url, options);
   const text = await response.text();
   const contentType = response.headers.get("content-type") ?? "";
+
+  console.log(`[phoenixFetch] Response: ${response.status} ${response.statusText}, content-type: ${contentType}`);
+
+  // Detect HTML response (likely a login page redirect)
+  if (contentType.includes("text/html") || text.trimStart().startsWith("<!") || text.trimStart().toLowerCase().startsWith("<html")) {
+    throw new Error(`${url}: Received HTML instead of JSON - authentication may be required or the endpoint may be incorrect`);
+  }
+
   const body = contentType.includes("application/json") && text ? JSON.parse(text) : text;
 
   if (!response.ok) {
