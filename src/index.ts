@@ -67,18 +67,16 @@ function resolvePort() {
 
 function phoenixHeaders(apiKey?: string) {
   return {
-    accept: "application/json",
-    ...(apiKey
-      ? {
-          authorization: `Bearer ${apiKey}`,
-          "api_key": apiKey, // Some Phoenix deployments use this header
-        }
-      : {}),
+    Accept: "application/json",
+    ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
   };
 }
 
 function phoenixUrl(baseUrl: string, path: string, query?: Record<string, string | string[] | number | undefined>) {
-  const url = new URL(path, baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`);
+  // Ensure baseUrl ends with / and path doesn't start with / to properly concatenate
+  const normalizedBase = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
+  const normalizedPath = path.startsWith("/") ? path.slice(1) : path;
+  const url = new URL(normalizedPath, normalizedBase);
   for (const [key, value] of Object.entries(query ?? {})) {
     if (value === undefined || value === "") continue;
     if (Array.isArray(value)) {
