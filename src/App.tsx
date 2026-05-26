@@ -50,7 +50,7 @@ const defaultTarget: PhoenixConnection = {
   project: "default",
 };
 
-async function postJson<T>(path: string, body: unknown): Promise<T> {
+async function postJson<T>(path: string, body: unknown): Promise<{ data: T; raw: unknown }> {
   const response = await fetch(path, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -58,7 +58,7 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
   });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error ?? `${response.status} ${response.statusText}`);
-  return data as T;
+  return { data: data as T, raw: data };
 }
 
 function formatDate(value: string) {
@@ -78,6 +78,15 @@ function shortId(id: string) {
   return id.length > 14 ? `${id.slice(0, 8)}...${id.slice(-6)}` : id;
 }
 
+type ApiLogEntry = {
+  timestamp: Date;
+  endpoint: string;
+  status: "pending" | "success" | "error";
+  request?: unknown;
+  response?: unknown;
+  error?: string;
+};
+
 export function App() {
   const [source, setSource] = useState(defaultSource);
   const [target, setTarget] = useState(defaultTarget);
@@ -87,6 +96,7 @@ export function App() {
   const [spans, setSpans] = useState<Span[]>([]);
   const [status, setStatus] = useState("Configure both Phoenix instances, load traces, select rows, then reflect.");
   const [loading, setLoading] = useState(false);
+  const [apiLogs, setApiLogs] = useState<ApiLogEntry[]>([]);
 
   const selectedTraceIds = selectedIds
     .map(id => traces.find(trace => trace.id === id)?.trace_id)
@@ -98,18 +108,27 @@ export function App() {
     setConnection(current => ({ ...current, [field]: value }));
   };
 
+  const addLog = (entry: Omit<ApiLogEntry, "timestamp">) => {
+    setApiLogs(logs => [{ ...entry, timestamp: new Date() }, ...logs].slice(0, 20));
+  };
+
   const loadTraces = async (event?: FormEvent) => {
     event?.preventDefault();
     setLoading(true);
     setStatus("Loading traces from source Phoenix...");
+    const requestBody = { source, limit };
+    addLog({ endpoint: "GET /api/traces", status: "pending", request: requestBody });
     try {
-      const data = await postJson<{ traces: TraceSummary[] }>("/api/traces", { source, limit });
+      const { data, raw } = await postJson<{ traces: TraceSummary[] }>("/api/traces", requestBody);
       setTraces(data.traces);
       setSelectedIds([]);
       setSpans([]);
       setStatus(`Loaded ${data.traces.length} traces from ${source.baseUrl}.`);
+      addLog({ endpoint: "GET /api/traces", status: "success", request: requestBody, response: raw });
     } catch (error) {
-      setStatus(String(error instanceof Error ? error.message : error));
+      const message = String(error instanceof Error ? error.message : error);
+      setStatus(message);
+      addLog({ endpoint: "GET /api/traces", status: "error", request: requestBody, error: message });
     } finally {
       setLoading(false);
     }
@@ -126,12 +145,17 @@ export function App() {
   const loadSelectedSpans = async () => {
     setLoading(true);
     setStatus("Fetching spans for selected traces...");
+    const requestBody = { source, traceIds: selectedTraceIds };
+    addLog({ endpoint: "GET /api/spans", status: "pending", request: requestBody });
     try {
-      const data = await postJson<{ spans: Span[] }>("/api/spans", { source, traceIds: selectedTraceIds });
+      const { data, raw } = await postJson<{ spans: Span[] }>("/api/spans", requestBody);
       setSpans(data.spans);
       setStatus(`Ready to reflect ${data.spans.length} spans from ${selectedTraceIds.length} traces.`);
+      addLog({ endpoint: "GET /api/spans", status: "success", request: requestBody, response: raw });
     } catch (error) {
-      setStatus(String(error instanceof Error ? error.message : error));
+      const message = String(error instanceof Error ? error.message : error);
+      setStatus(message);
+      addLog({ endpoint: "GET /api/spans", status: "error", request: requestBody, error: message });
     } finally {
       setLoading(false);
     }
@@ -140,14 +164,16 @@ export function App() {
   const reflect = async () => {
     setLoading(true);
     setStatus("Reflecting selected spans into target Phoenix...");
+    const requestBody = { target, spans: selectedSpans };
+    addLog({ endpoint: "POST /api/reflect", status: "pending", request: { target, spanCount: selectedSpans.length } });
     try {
-      const data = await postJson<{ total_received?: number; total_queued?: number }>("/api/reflect", {
-        target,
-        spans: selectedSpans,
-      });
+      const { data, raw } = await postJson<{ total_received?: number; total_queued?: number }>("/api/reflect", requestBody);
       setStatus(`Reflected ${data.total_queued ?? selectedSpans.length} of ${data.total_received ?? selectedSpans.length} spans into ${target.baseUrl}.`);
+      addLog({ endpoint: "POST /api/reflect", status: "success", request: { target, spanCount: selectedSpans.length }, response: raw });
     } catch (error) {
-      setStatus(String(error instanceof Error ? error.message : error));
+      const message = String(error instanceof Error ? error.message : error);
+      setStatus(message);
+      addLog({ endpoint: "POST /api/reflect", status: "error", request: { target, spanCount: selectedSpans.length }, error: message });
     } finally {
       setLoading(false);
     }
@@ -269,20 +295,83 @@ export function App() {
           </Card>
 
           {/* Payload preview */}
-          <Card>
+          <Card className="flex min-h-0 flex-col">
             <CardHeader className="border-b border-border">
               <CardTitle>Reflection Payload</CardTitle>
               <CardDescription>{selectedSpans.length} staged spans</CardDescription>
             </CardHeader>
-            <CardContent>
+            <CardContent className="min-h-0 flex-1">
               <Textarea
                 readOnly
                 value={selectedSpans.length ? JSON.stringify(selectedSpans, null, 2) : "Stage selected spans to preview the payload."}
-                className="min-h-[460px] resize-y bg-muted/50 font-mono text-sm"
+                className="h-full max-h-[520px] min-h-[200px] resize-none bg-muted/50 font-mono text-sm"
               />
             </CardContent>
           </Card>
         </div>
+
+        {/* API Response Log */}
+        <Card>
+          <CardHeader className="border-b border-border">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <CardTitle>API Response Log</CardTitle>
+                <CardDescription>Recent API calls and their responses</CardDescription>
+              </div>
+              {apiLogs.length > 0 && (
+                <Button type="button" variant="ghost" size="sm" onClick={() => setApiLogs([])}>
+                  Clear
+                </Button>
+              )}
+            </div>
+          </CardHeader>
+          <CardContent className="p-0">
+            <div className="max-h-[400px] overflow-auto">
+              {apiLogs.length === 0 ? (
+                <div className="p-6 text-sm text-muted-foreground">No API calls yet.</div>
+              ) : (
+                <ul role="list" className="divide-y divide-border">
+                  {apiLogs.map((log, index) => (
+                    <li key={`${log.timestamp.getTime()}-${index}`} className="p-4">
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={`inline-flex size-2 rounded-full ${
+                              log.status === "pending"
+                                ? "animate-pulse bg-yellow-500"
+                                : log.status === "success"
+                                  ? "bg-emerald-500"
+                                  : "bg-red-500"
+                            }`}
+                          />
+                          <span className="font-mono text-sm text-foreground">{log.endpoint}</span>
+                        </div>
+                        <span className="text-xs tabular-nums text-muted-foreground">
+                          {log.timestamp.toLocaleTimeString()}
+                        </span>
+                      </div>
+                      {log.error && (
+                        <div className="mt-2 rounded-md bg-red-500/10 px-3 py-2 text-sm text-red-400">
+                          {log.error}
+                        </div>
+                      )}
+                      {log.response && (
+                        <details className="mt-2">
+                          <summary className="cursor-pointer text-sm text-muted-foreground hover:text-foreground">
+                            View response
+                          </summary>
+                          <pre className="mt-2 max-h-[200px] overflow-auto rounded-md bg-muted/50 p-3 font-mono text-xs text-foreground">
+                            {JSON.stringify(log.response, null, 2)}
+                          </pre>
+                        </details>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </CardContent>
+        </Card>
       </section>
     </main>
   );
