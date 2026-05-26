@@ -1,0 +1,19 @@
+@import "../styles/globals.css";
+
+@layer base {
+  :root {
+    @apply font-sans antialiased;
+  }
+
+  body {
+    @apply min-w-[320px] min-h-dvh m-0 bg-background text-foreground;
+  }
+}
+
+@media (prefers-reduced-motion) {
+  *,
+  ::before,
+  ::after {
+    animation: none !important;
+  }
+}
